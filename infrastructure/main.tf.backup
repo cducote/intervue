@@ -22,7 +22,49 @@ variable "aws_region" {
 
 variable "project_name" {
   description = "Project name for resource naming"
-  type        = string
+resource "aws_api_gateway_integration" "speech_to_text_post" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resresource "aws_api_gateway_integration" "ai_response_post" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.ai_response.id
+  http_method = aws_api_gateway_method.ai_response_post.http_method
+
+  integration_http_method = "POST"
+  type                   = "AWS_PROXY"
+  uri                    = aws_lambda_function.ai_response.invoke_arn
+}
+
+resource "aws_api_gateway_integration_response" "ai_response_post" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.ai_response.id
+  http_method = aws_api_gateway_method.ai_response_post.http_method
+  status_code = aws_api_gateway_method_response.ai_response_post.status_code
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Origin" = "'*'"
+  }
+
+  depends_on = [aws_api_gateway_integration.ai_response_post]
+}= aws_api_gateway_resource.speech_to_text.id
+  http_method = aws_api_gateway_method.speech_to_text_post.http_method
+
+  integration_http_method = "POST"
+  type                   = "AWS_PROXY"
+  uri                    = aws_lambda_function.speech_to_text.invoke_arn
+}
+
+resource "aws_api_gateway_integration_response" "speech_to_text_post" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.speech_to_text.id
+  http_method = aws_api_gateway_method.speech_to_text_post.http_method
+  status_code = aws_api_gateway_method_response.speech_to_text_post.status_code
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Origin" = "'*'"
+  }
+
+  depends_on = [aws_api_gateway_integration.speech_to_text_post]
+}     = string
   default     = "voice-interview-ai"
 }
 
@@ -239,24 +281,12 @@ resource "aws_lambda_function" "code_executor" {
 
 # NEW Phase 2: Voice Processing Lambda Functions
 
-# Speech-to-Text Lambda
-resource "aws_lambda_function" "speech_to_text" {
-  filename         = "speech-to-text.zip"
-  source_code_hash = filebase64sha256("speech-to-text.zip")
-  function_name    = "${var.project_name}-speech-to-text-${var.environment}"
-  role            = aws_iam_role.lambda_execution_role.arn
-  handler         = "index.handler"
-  runtime         = "nodejs18.x"
-  timeout         = 60
-
-  environment {
-    variables = {
-      S3_BUCKET      = aws_s3_bucket.storage.bucket
-      OPENAI_API_KEY = var.openai_api_key
-    }
-  }
-
-  depends_on = [aws_iam_role_policy.lambda_policy]
+# Speech-to-text endpoint
+resource "aws_api_gateway_method" "speech_to_text_post" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.speech_to_text.id
+  http_method   = "POST"
+  authorization = "NONE"
 }
 
 # AI Response Lambda
@@ -445,10 +475,10 @@ resource "aws_api_gateway_method" "speech_to_text_options" {
 
 resource "aws_api_gateway_integration" "speech_to_text_options" {
   rest_api_id = aws_api_gateway_rest_api.api.id
-  resource_id = aws_api_gateway_resource.speech_to_text.id
+  resource_id = aws_api_gateway_method.speech_to_text_options.resource_id
   http_method = aws_api_gateway_method.speech_to_text_options.http_method
   type        = "MOCK"
-
+  
   request_templates = {
     "application/json" = jsonencode({
       statusCode = 200
@@ -462,14 +492,14 @@ resource "aws_api_gateway_method_response" "speech_to_text_options" {
   http_method = aws_api_gateway_method.speech_to_text_options.http_method
   status_code = "200"
 
-  response_models = {
-    "application/json" = "Empty"
-  }
-
   response_parameters = {
     "method.response.header.Access-Control-Allow-Headers" = true
     "method.response.header.Access-Control-Allow-Methods" = true
     "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+
+  response_models = {
+    "application/json" = "Empty"
   }
 }
 
@@ -493,11 +523,23 @@ resource "aws_api_gateway_resource" "ai_response" {
   path_part   = "ai-response"
 }
 
+# AI response endpoint
 resource "aws_api_gateway_method" "ai_response_post" {
   rest_api_id   = aws_api_gateway_rest_api.api.id
   resource_id   = aws_api_gateway_resource.ai_response.id
   http_method   = "POST"
   authorization = "NONE"
+}
+
+resource "aws_api_gateway_method_response" "ai_response_post" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.ai_response.id
+  http_method = aws_api_gateway_method.ai_response_post.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Origin" = true
+  }
 }
 
 resource "aws_api_gateway_integration" "ai_response_post" {
@@ -528,10 +570,10 @@ resource "aws_api_gateway_method" "ai_response_options" {
 
 resource "aws_api_gateway_integration" "ai_response_options" {
   rest_api_id = aws_api_gateway_rest_api.api.id
-  resource_id = aws_api_gateway_resource.ai_response.id
+  resource_id = aws_api_gateway_method.ai_response_options.resource_id
   http_method = aws_api_gateway_method.ai_response_options.http_method
   type        = "MOCK"
-
+  
   request_templates = {
     "application/json" = jsonencode({
       statusCode = 200
@@ -545,14 +587,14 @@ resource "aws_api_gateway_method_response" "ai_response_options" {
   http_method = aws_api_gateway_method.ai_response_options.http_method
   status_code = "200"
 
-  response_models = {
-    "application/json" = "Empty"
-  }
-
   response_parameters = {
     "method.response.header.Access-Control-Allow-Headers" = true
     "method.response.header.Access-Control-Allow-Methods" = true
     "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+
+  response_models = {
+    "application/json" = "Empty"
   }
 }
 
@@ -749,10 +791,7 @@ resource "aws_api_gateway_deployment" "api_deployment" {
     aws_api_gateway_integration.speech_to_text_post,
     aws_api_gateway_integration.ai_response_post,
     aws_api_gateway_integration.text_to_speech_post,
-    aws_api_gateway_integration.execute_code_post,
-    aws_api_gateway_integration.files_post,
-    aws_api_gateway_integration.speech_to_text_options,
-    aws_api_gateway_integration.ai_response_options
+    aws_api_gateway_integration.execute_code_post
   ]
 
   lifecycle {
