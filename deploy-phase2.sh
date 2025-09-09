@@ -94,11 +94,12 @@ aws_region = "us-east-1"
 environment = "dev"
 project_name = "voice-interview-ai"
 
-# API Keys (set these to your actual keys)
-openai_api_key = "***REMOVED***"
-anthropic_api_key = "***REMOVED***"
+# API Keys - REPLACE WITH YOUR ACTUAL KEYS
+openai_api_key = "your-openai-api-key-here"
+anthropic_api_key = "your-anthropic-api-key-here"
 EOF
-    echo -e "${GREEN}  ✅ terraform.tfvars created${NC}"
+    echo -e "${RED}  ⚠️  terraform.tfvars created with placeholder API keys${NC}"
+    echo -e "${YELLOW}  📝 Please edit terraform.tfvars and add your real API keys before deploying!${NC}"
 fi
 
 echo -e "${BLUE}🔍 Phase 3: Terraform plan...${NC}"

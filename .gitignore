@@ -53,6 +53,7 @@ infrastructure/.terraform/
 infrastructure/*.tfstate
 infrastructure/*.tfstate.*
 infrastructure/.terraform.lock.hcl
+infrastructure/terraform.tfvars
 
 # Lambda deployment packages
 *.zip
