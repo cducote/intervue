@@ -1,0 +1,41 @@
+{
+  "name": "voice-interview-ai",
+  "version": "1.0.0",
+  "description": "AI-powered technical interview platform with voice interaction",
+  "main": "index.js",
+  "scripts": {
+    "deploy-lambda": "cd backend/lambda-functions && npm run deploy",
+    "build-containers": "cd backend/docker-containers && npm run build",
+    "test": "jest",
+    "test:integration": "jest --config=jest.integration.config.js",
+    "test:load": "artillery run load-tests/load-test.yml",
+    "setup-aws": "node scripts/setup-aws.js",
+    "deploy-infrastructure": "cd infrastructure && terraform apply",
+    "start:dev": "concurrently \"npm run backend:dev\" \"npm run frontend:dev\"",
+    "backend:dev": "cd backend && npm start",
+    "frontend:dev": "cd frontend && npm start"
+  },
+  "keywords": [
+    "ai",
+    "interview",
+    "voice",
+    "technical",
+    "coding",
+    "aws",
+    "lambda",
+    "react"
+  ],
+  "author": "Voice Interview AI Team",
+  "license": "MIT",
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "artillery": "^2.0.0",
+    "concurrently": "^8.2.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-sdk": "^2.1400.0",
+    "uuid": "^9.0.0"
+  }
+}

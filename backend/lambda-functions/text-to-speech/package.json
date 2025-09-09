@@ -1,0 +1,22 @@
+{
+  "name": "text-to-speech-lambda",
+  "version": "1.0.0",
+  "description": "OpenAI TTS text-to-speech Lambda function",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "aws-sdk": "^2.1691.0",
+    "openai": "^4.56.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.143",
+    "@types/node": "^22.5.0",
+    "@types/uuid": "^9.0.8",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,705 @@
+# AWS Provider Configuration
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+# Variables
+variable "aws_region" {
+  description = "AWS region"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "project_name" {
+  description = "Project name for resource naming"
+  type        = string
+  default     = "voice-interview-ai"
+}
+
+variable "environment" {
+  description = "Environment (dev, staging, prod)"
+  type        = string
+  default     = "dev"
+}
+
+# NEW: API Keys for Phase 2
+variable "openai_api_key" {
+  description = "OpenAI API key for speech processing"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "anthropic_api_key" {
+  description = "Anthropic API key for AI responses"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+# S3 Bucket for file storage
+resource "aws_s3_bucket" "storage" {
+  bucket = "${var.project_name}-storage-${var.environment}"
+}
+
+resource "aws_s3_bucket_versioning" "storage_versioning" {
+  bucket = aws_s3_bucket.storage.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "storage_encryption" {
+  bucket = aws_s3_bucket.storage.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# DynamoDB Tables
+resource "aws_dynamodb_table" "sessions" {
+  name           = "${var.project_name}-sessions-${var.environment}"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "sessionId"
+  range_key      = "type"
+
+  attribute {
+    name = "sessionId"
+    type = "S"
+  }
+
+  attribute {
+    name = "type"
+    type = "S"
+  }
+
+  tags = {
+    Name        = "${var.project_name}-sessions"
+    Environment = var.environment
+  }
+}
+
+resource "aws_dynamodb_table" "files" {
+  name           = "${var.project_name}-files-${var.environment}"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "sessionId"
+  range_key      = "filePath"
+
+  attribute {
+    name = "sessionId"
+    type = "S"
+  }
+
+  attribute {
+    name = "filePath"
+    type = "S"
+  }
+
+  tags = {
+    Name        = "${var.project_name}-files"
+    Environment = var.environment
+  }
+}
+
+# IAM Role for Lambda Functions
+resource "aws_iam_role" "lambda_execution_role" {
+  name = "${var.project_name}-lambda-execution-role-${var.environment}"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# IAM Policy for Lambda Functions
+resource "aws_iam_role_policy" "lambda_policy" {
+  name = "${var.project_name}-lambda-policy-${var.environment}"
+  role = aws_iam_role.lambda_execution_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ]
+        Resource = "${aws_s3_bucket.storage.arn}/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          "dynamodb:Scan"
+        ]
+        Resource = [
+          aws_dynamodb_table.sessions.arn,
+          aws_dynamodb_table.files.arn,
+          aws_dynamodb_table.connections.arn,
+          "${aws_dynamodb_table.sessions.arn}/index/*",
+          "${aws_dynamodb_table.files.arn}/index/*",
+          "${aws_dynamodb_table.connections.arn}/index/*"
+        ]
+      }
+    ]
+  })
+}
+
+# Lambda Functions
+resource "aws_lambda_function" "file_operations" {
+  filename         = "file-operations.zip"
+  function_name    = "${var.project_name}-file-operations-${var.environment}"
+  role            = aws_iam_role.lambda_execution_role.arn
+  handler         = "index.handler"
+  runtime         = "nodejs18.x"
+  timeout         = 30
+
+  environment {
+    variables = {
+      SESSIONS_TABLE = aws_dynamodb_table.sessions.name
+      FILES_TABLE    = aws_dynamodb_table.files.name
+      S3_BUCKET      = aws_s3_bucket.storage.bucket
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.lambda_policy]
+}
+
+resource "aws_lambda_function" "session_manager" {
+  filename         = "session-manager.zip"
+  function_name    = "${var.project_name}-session-manager-${var.environment}"
+  role            = aws_iam_role.lambda_execution_role.arn
+  handler         = "index.handler"
+  runtime         = "nodejs18.x"
+  timeout         = 30
+
+  environment {
+    variables = {
+      SESSIONS_TABLE = aws_dynamodb_table.sessions.name
+      S3_BUCKET      = aws_s3_bucket.storage.bucket
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.lambda_policy]
+}
+
+resource "aws_lambda_function" "code_executor" {
+  filename         = "code-executor.zip"
+  function_name    = "${var.project_name}-code-executor-${var.environment}"
+  role            = aws_iam_role.lambda_execution_role.arn
+  handler         = "index.handler"
+  runtime         = "nodejs18.x"
+  timeout         = 60
+
+  environment {
+    variables = {
+      S3_BUCKET         = aws_s3_bucket.storage.bucket
+      EXECUTION_TIMEOUT = "30000"
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.lambda_policy]
+}
+
+# NEW Phase 2: Voice Processing Lambda Functions
+
+# Speech-to-Text Lambda
+resource "aws_lambda_function" "speech_to_text" {
+  filename         = "speech-to-text.zip"
+  function_name    = "${var.project_name}-speech-to-text-${var.environment}"
+  role            = aws_iam_role.lambda_execution_role.arn
+  handler         = "index.handler"
+  runtime         = "nodejs18.x"
+  timeout         = 60
+
+  environment {
+    variables = {
+      S3_BUCKET      = aws_s3_bucket.storage.bucket
+      OPENAI_API_KEY = var.openai_api_key
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.lambda_policy]
+}
+
+# AI Response Lambda
+resource "aws_lambda_function" "ai_response" {
+  filename         = "ai-response.zip"
+  function_name    = "${var.project_name}-ai-response-${var.environment}"
+  role            = aws_iam_role.lambda_execution_role.arn
+  handler         = "index.handler"
+  runtime         = "nodejs18.x"
+  timeout         = 60
+
+  environment {
+    variables = {
+      SESSIONS_TABLE     = aws_dynamodb_table.sessions.name
+      ANTHROPIC_API_KEY  = var.anthropic_api_key
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.lambda_policy]
+}
+
+# Text-to-Speech Lambda
+resource "aws_lambda_function" "text_to_speech" {
+  filename         = "text-to-speech.zip"
+  function_name    = "${var.project_name}-text-to-speech-${var.environment}"
+  role            = aws_iam_role.lambda_execution_role.arn
+  handler         = "index.handler"
+  runtime         = "nodejs18.x"
+  timeout         = 60
+
+  environment {
+    variables = {
+      S3_BUCKET      = aws_s3_bucket.storage.bucket
+      OPENAI_API_KEY = var.openai_api_key
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.lambda_policy]
+}
+
+# WebSocket Handler Lambda
+resource "aws_lambda_function" "websocket_handler" {
+  filename         = "websocket-handler.zip"
+  function_name    = "${var.project_name}-websocket-handler-${var.environment}"
+  role            = aws_iam_role.lambda_execution_role.arn
+  handler         = "index.handler"
+  runtime         = "nodejs18.x"
+  timeout         = 30
+
+  environment {
+    variables = {
+      CONNECTIONS_TABLE = aws_dynamodb_table.connections.name
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.lambda_policy]
+}
+
+# NEW: WebSocket connections table
+resource "aws_dynamodb_table" "connections" {
+  name           = "${var.project_name}-connections-${var.environment}"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "connectionId"
+
+  attribute {
+    name = "connectionId"
+    type = "S"
+  }
+
+  attribute {
+    name = "sessionId"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name     = "SessionConnectionIndex"
+    hash_key = "sessionId"
+    projection_type = "ALL"
+  }
+
+  # TTL for automatic cleanup of stale connections
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = {
+    Name        = "${var.project_name}-connections"
+    Environment = var.environment
+  }
+}
+
+# S3 CORS configuration for frontend access
+resource "aws_s3_bucket_cors_configuration" "storage_cors" {
+  bucket = aws_s3_bucket.storage.id
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["GET", "PUT", "POST", "DELETE", "HEAD"]
+    allowed_origins = ["*"] # Restrict this in production
+    expose_headers  = ["ETag"]
+    max_age_seconds = 3000
+  }
+}
+
+# API Gateway
+resource "aws_api_gateway_rest_api" "api" {
+  name        = "${var.project_name}-api-${var.environment}"
+  description = "Voice Interview AI API"
+}
+
+# API Gateway Resources and Methods
+resource "aws_api_gateway_resource" "sessions" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "sessions"
+}
+
+resource "aws_api_gateway_method" "sessions_post" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.sessions.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "sessions_post" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_method.sessions_post.resource_id
+  http_method = aws_api_gateway_method.sessions_post.http_method
+
+  integration_http_method = "POST"
+  type                   = "AWS_PROXY"
+  uri                    = aws_lambda_function.session_manager.invoke_arn
+}
+
+# Lambda Permissions for API Gateway
+resource "aws_lambda_permission" "api_gateway_session_manager" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.session_manager.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.api.execution_arn}/*/*"
+}
+
+# NEW Phase 2: API Gateway Resources for Voice Processing
+
+# Speech-to-Text API Resource
+resource "aws_api_gateway_resource" "speech_to_text" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "speech-to-text"
+}
+
+resource "aws_api_gateway_method" "speech_to_text_post" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.speech_to_text.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "speech_to_text_post" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_method.speech_to_text_post.resource_id
+  http_method = aws_api_gateway_method.speech_to_text_post.http_method
+
+  integration_http_method = "POST"
+  type                   = "AWS_PROXY"
+  uri                    = aws_lambda_function.speech_to_text.invoke_arn
+}
+
+resource "aws_lambda_permission" "api_gateway_speech_to_text" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.speech_to_text.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.api.execution_arn}/*/*"
+}
+
+# AI Response API Resource
+resource "aws_api_gateway_resource" "ai_response" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "ai-response"
+}
+
+resource "aws_api_gateway_method" "ai_response_post" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.ai_response.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "ai_response_post" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_method.ai_response_post.resource_id
+  http_method = aws_api_gateway_method.ai_response_post.http_method
+
+  integration_http_method = "POST"
+  type                   = "AWS_PROXY"
+  uri                    = aws_lambda_function.ai_response.invoke_arn
+}
+
+resource "aws_lambda_permission" "api_gateway_ai_response" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.ai_response.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.api.execution_arn}/*/*"
+}
+
+# Text-to-Speech API Resource
+resource "aws_api_gateway_resource" "text_to_speech" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "text-to-speech"
+}
+
+resource "aws_api_gateway_method" "text_to_speech_post" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.text_to_speech.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "text_to_speech_post" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_method.text_to_speech_post.resource_id
+  http_method = aws_api_gateway_method.text_to_speech_post.http_method
+
+  integration_http_method = "POST"
+  type                   = "AWS_PROXY"
+  uri                    = aws_lambda_function.text_to_speech.invoke_arn
+}
+
+resource "aws_lambda_permission" "api_gateway_text_to_speech" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.text_to_speech.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.api.execution_arn}/*/*"
+}
+
+# Code Executor API Resource
+resource "aws_api_gateway_resource" "execute_code" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "execute-code"
+}
+
+resource "aws_api_gateway_method" "execute_code_post" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.execute_code.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "execute_code_post" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_method.execute_code_post.resource_id
+  http_method = aws_api_gateway_method.execute_code_post.http_method
+
+  integration_http_method = "POST"
+  type                   = "AWS_PROXY"
+  uri                    = aws_lambda_function.code_executor.invoke_arn
+}
+
+resource "aws_lambda_permission" "api_gateway_code_executor" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.code_executor.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.api.execution_arn}/*/*"
+}
+
+# Files API Resource
+resource "aws_api_gateway_resource" "files" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "files"
+}
+
+resource "aws_api_gateway_method" "files_post" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.files.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "files_post" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_method.files_post.resource_id
+  http_method = aws_api_gateway_method.files_post.http_method
+
+  integration_http_method = "POST"
+  type                   = "AWS_PROXY"
+  uri                    = aws_lambda_function.file_operations.invoke_arn
+}
+
+resource "aws_lambda_permission" "api_gateway_file_operations" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.file_operations.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.api.execution_arn}/*/*"
+}
+
+# WebSocket API for Voice Processing
+resource "aws_apigatewayv2_api" "websocket_api" {
+  name                       = "${var.project_name}-websocket-${var.environment}"
+  protocol_type              = "WEBSOCKET"
+  route_selection_expression = "$request.body.action"
+}
+
+# WebSocket Routes
+resource "aws_apigatewayv2_route" "connect" {
+  api_id    = aws_apigatewayv2_api.websocket_api.id
+  route_key = "$connect"
+  target    = "integrations/${aws_apigatewayv2_integration.websocket_connect.id}"
+}
+
+resource "aws_apigatewayv2_route" "disconnect" {
+  api_id    = aws_apigatewayv2_api.websocket_api.id
+  route_key = "$disconnect"
+  target    = "integrations/${aws_apigatewayv2_integration.websocket_disconnect.id}"
+}
+
+resource "aws_apigatewayv2_route" "default" {
+  api_id    = aws_apigatewayv2_api.websocket_api.id
+  route_key = "$default"
+  target    = "integrations/${aws_apigatewayv2_integration.websocket_default.id}"
+}
+
+# WebSocket Integrations
+resource "aws_apigatewayv2_integration" "websocket_connect" {
+  api_id           = aws_apigatewayv2_api.websocket_api.id
+  integration_type = "AWS_PROXY"
+  integration_uri  = aws_lambda_function.websocket_handler.invoke_arn
+}
+
+resource "aws_apigatewayv2_integration" "websocket_disconnect" {
+  api_id           = aws_apigatewayv2_api.websocket_api.id
+  integration_type = "AWS_PROXY"
+  integration_uri  = aws_lambda_function.websocket_handler.invoke_arn
+}
+
+resource "aws_apigatewayv2_integration" "websocket_default" {
+  api_id           = aws_apigatewayv2_api.websocket_api.id
+  integration_type = "AWS_PROXY"
+  integration_uri  = aws_lambda_function.websocket_handler.invoke_arn
+}
+
+# WebSocket Deployment
+resource "aws_apigatewayv2_deployment" "websocket_deployment" {
+  api_id = aws_apigatewayv2_api.websocket_api.id
+
+  depends_on = [
+    aws_apigatewayv2_route.connect,
+    aws_apigatewayv2_route.disconnect,
+    aws_apigatewayv2_route.default
+  ]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_apigatewayv2_stage" "websocket_stage" {
+  api_id        = aws_apigatewayv2_api.websocket_api.id
+  deployment_id = aws_apigatewayv2_deployment.websocket_deployment.id
+  name          = var.environment
+}
+
+# WebSocket Lambda Permissions
+resource "aws_lambda_permission" "websocket_connect" {
+  statement_id  = "AllowWebSocketConnect"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.websocket_handler.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.websocket_api.execution_arn}/*/*"
+}
+
+# API Gateway Deployment
+resource "aws_api_gateway_deployment" "api_deployment" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+
+  depends_on = [
+    aws_api_gateway_integration.sessions_post,
+    aws_api_gateway_integration.speech_to_text_post,
+    aws_api_gateway_integration.ai_response_post,
+    aws_api_gateway_integration.text_to_speech_post,
+    aws_api_gateway_integration.execute_code_post
+  ]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_api_gateway_stage" "api_stage" {
+  deployment_id = aws_api_gateway_deployment.api_deployment.id
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  stage_name    = var.environment
+}
+
+# Outputs
+output "s3_bucket_name" {
+  description = "Name of the S3 bucket"
+  value       = aws_s3_bucket.storage.bucket
+}
+
+output "sessions_table_name" {
+  description = "Name of the sessions DynamoDB table"
+  value       = aws_dynamodb_table.sessions.name
+}
+
+output "files_table_name" {
+  description = "Name of the files DynamoDB table"
+  value       = aws_dynamodb_table.files.name
+}
+
+output "connections_table_name" {
+  description = "Name of the connections DynamoDB table"
+  value       = aws_dynamodb_table.connections.name
+}
+
+output "api_gateway_url" {
+  description = "URL of the API Gateway"
+  value       = "https://${aws_api_gateway_rest_api.api.id}.execute-api.${var.aws_region}.amazonaws.com/${var.environment}"
+}
+
+output "websocket_api_url" {
+  description = "URL of the WebSocket API"
+  value       = "wss://${aws_apigatewayv2_api.websocket_api.id}.execute-api.${var.aws_region}.amazonaws.com/${var.environment}"
+}
+
+output "lambda_functions" {
+  description = "Names of all Lambda functions"
+  value = {
+    file_operations   = aws_lambda_function.file_operations.function_name
+    session_manager   = aws_lambda_function.session_manager.function_name
+    code_executor     = aws_lambda_function.code_executor.function_name
+    speech_to_text    = aws_lambda_function.speech_to_text.function_name
+    ai_response       = aws_lambda_function.ai_response.function_name
+    text_to_speech    = aws_lambda_function.text_to_speech.function_name
+    websocket_handler = aws_lambda_function.websocket_handler.function_name
+  }
+}

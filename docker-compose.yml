@@ -1,0 +1,50 @@
+# Docker Compose for Voice Interview AI
+version: '3.8'
+
+services:
+  # Python execution container
+  python-executor:
+    build:
+      context: ./backend/docker-containers/python
+      dockerfile: Dockerfile
+    image: interview-executor:python
+    container_name: voice-interview-python
+    networks:
+      - interview-network
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=50m
+    mem_limit: 128m
+    cpus: 0.5
+    environment:
+      - EXECUTION_TIMEOUT=30000
+      - MAX_MEMORY=128m
+    command: ["python", "/app/execute.py"]
+
+  # JavaScript execution container  
+  javascript-executor:
+    build:
+      context: ./backend/docker-containers/javascript
+      dockerfile: Dockerfile
+    image: interview-executor:node
+    container_name: voice-interview-node
+    networks:
+      - interview-network
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=50m
+    mem_limit: 128m
+    cpus: 0.5
+    environment:
+      - EXECUTION_TIMEOUT=30000
+      - MAX_MEMORY=128m
+    command: ["node", "/app/execute.js"]
+
+networks:
+  interview-network:
+    driver: bridge
+    internal: true  # No external network access for security
